@@ -98,10 +98,16 @@ function renderSummary(metrics) {
     ['Belayer 峰值受力', `${(metrics.maxBelayerLoad / 1000).toFixed(2)} kN`],
     ['Anchor 近似峰值', `${(metrics.maxAnchorLoad / 1000).toFixed(2)} kN`],
     ['最低点', `${metrics.lowestPoint.toFixed(2)} m`],
+    ['最小离地余量', `${metrics.minGroundClearance.toFixed(2)} m`],
     ['Belayer 上提', `${metrics.belayerLift.toFixed(2)} m`],
     ['Catch softness', `${metrics.catchSoftness.toFixed(0)} / 100`],
     ['Ground fall', metrics.groundFall ? 'YES' : 'NO'],
     ['等效绳刚度', `${(metrics.k / 1000).toFixed(2)} kN/m`],
+    ['draw 数量', `${metrics.drawCount}`],
+    ['总绳路长度', `${metrics.totalPathLength.toFixed(2)} m`],
+    ['有效绳长', `${metrics.effectiveRopeLength.toFixed(2)} m`],
+    ['总 transmission', `${metrics.tauTotal.toFixed(2)}`],
+    ['rope loaded at', metrics.ropeLoadedAt != null ? `${metrics.ropeLoadedAt.toFixed(2)} s` : 'n/a'],
   ];
   els.summaryGrid.innerHTML = items.map(([label, value]) => `<div class="metric"><span class="label">${label}</span><div class="value">${value}</div></div>`).join('');
 
@@ -183,6 +189,13 @@ function draw(frame) {
     ctx.stroke();
   }
 
+  (frame.draws || []).forEach((d, idx) => {
+    const pt = toCanvas(d);
+    ctx.fillStyle = idx === (frame.draws.length - 1) ? '#5fd6ff' : 'rgba(95,214,255,0.72)';
+    ctx.beginPath();
+    ctx.arc(pt.x, pt.y, idx === (frame.draws.length - 1) ? 8 : 6, 0, Math.PI * 2);
+    ctx.fill();
+  });
   ctx.fillStyle = '#5fd6ff';
   ctx.beginPath();
   ctx.arc(clip.x, clip.y, 8, 0, Math.PI * 2);

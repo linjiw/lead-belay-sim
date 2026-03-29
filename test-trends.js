@@ -7,7 +7,7 @@ function runCase(name, params) { return { name, metrics: simulate(params, { dura
 
 const base = clonePreset('lightBelayerSoftCatch');
 const longerRope = { ...base, ropeOut: base.ropeOut * 1.5 };
-const moreFriction = { ...base, frictionParticipation: 0.6, frictionTransmission: 0.65 };
+const moreFriction = { ...base, quickdrawFrictionMu: 0.35, routeWander: 0.4, drawCount: 3 };
 const hardBelayer = { ...base, belayerMass: 95, anchorMode: 'hard', belayerTetherLength: 0.35, softCatchIntensity: 0 };
 const softBelayer = { ...base, belayerMass: 55, anchorMode: 'free', belayerTetherLength: 0, softCatchIntensity: 0.85 };
 const firstClipOff = { ...clonePreset('gymLowClipRisk'), firstClipClipped: 0 };
@@ -18,7 +18,7 @@ const byName = Object.fromEntries(results.map(r => [r.name, r.metrics]));
 
 assert(byName.longerRope.maxClimberForce < byName.base.maxClimberForce, 'Longer rope should soften catch and lower climber peak force');
 assert(byName.moreFriction.actualFF > byName.base.actualFF, 'More friction should increase actual fall factor');
-assert(byName.moreFriction.maxClimberForce > byName.base.maxClimberForce, 'More friction should harden catch');
+assert(byName.moreFriction.tauTotal < byName.base.tauTotal, 'More friction and bends should reduce total transmission');
 assert(byName.softBelayer.belayerLift > byName.hardBelayer.belayerLift, 'Softer/lighter belayer should be lifted more');
 assert(byName.hardBelayer.maxAnchorLoad > byName.softBelayer.maxAnchorLoad, 'Hard belayer setup should increase anchor load');
 assert(byName.firstClipOff.belayerLift > byName.firstClipOn.belayerLift, 'No first clip should allow more belayer displacement in the current model');

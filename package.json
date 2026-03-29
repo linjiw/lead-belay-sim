@@ -6,6 +6,7 @@
     "test": "node test.js",
     "test:trends": "node test-trends.js",
     "test:constraints": "node test-constraints.js",
-    "test:output": "node test-output.js"
+    "test:output": "node test-output.js",
+    "test:multidraw": "node test-multidraw.js"
   }
 }

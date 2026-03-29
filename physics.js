@@ -4,12 +4,76 @@ export function clamp(v, lo, hi) {
   return Math.max(lo, Math.min(hi, v));
 }
 
-export function ropeStiffness(params) {
-  // Heuristic calibration: converts rope elongation / impact rating into an effective
-  // spring constant for the currently participating rope length. This is NOT a UIAA-certified
-  // derivation; it is an educational approximation chosen to preserve trend behavior.
+export function segmentLength(a, b) {
+  return Math.hypot(b.x - a.x, b.y - a.y);
+}
+
+export function generateDraws(params, wallX = 0) {
+  const draws = [];
+  const count = Math.max(1, Math.round(params.drawCount || 1));
+  const baseX = wallX + 0.02;
+  const maxHeight = params.lastClipHeight + Math.max(0.05, params.climberAboveClip * 0.8);
+  for (let i = 0; i < count; i++) {
+    const y = params.firstDrawHeight + i * params.drawSpacing;
+    const offsetSign = i % 2 === 0 ? 1 : -1;
+    const x = baseX + offsetSign * params.routeWander * Math.min(1, 0.45 + i * 0.12);
+    draws.push({ x, y, clipped: true, index: i + 1 });
+  }
+  const clipped = draws.filter(d => d.y <= maxHeight);
+  return clipped.length ? clipped : [{ x: baseX, y: Math.min(params.firstDrawHeight, maxHeight), clipped: true, index: 1 }];
+}
+
+export function angleBetween(v1, v2) {
+  const n1 = Math.hypot(v1.x, v1.y);
+  const n2 = Math.hypot(v2.x, v2.y);
+  if (n1 < 1e-8 || n2 < 1e-8) return Math.PI;
+  const dot = clamp((v1.x * v2.x + v1.y * v2.y) / (n1 * n2), -1, 1);
+  return Math.acos(dot);
+}
+
+export function computeRopeModel({ belayerPoint, climberPoint, draws, params }) {
+  const path = [belayerPoint, ...draws, climberPoint];
+  const segments = [];
+  for (let i = 0; i < path.length - 1; i++) {
+    const a = path[i], b = path[i + 1];
+    segments.push({ from: a, to: b, length: segmentLength(a, b), index: i });
+  }
+
+  const mu = params.quickdrawFrictionMu ?? 0.22;
+  const drawDetails = [];
+  for (let i = 1; i < path.length - 1; i++) {
+    const p0 = path[i - 1], p1 = path[i], p2 = path[i + 1];
+    const vin = { x: p0.x - p1.x, y: p0.y - p1.y };
+    const vout = { x: p2.x - p1.x, y: p2.y - p1.y };
+    const phi = angleBetween(vin, vout);
+    const theta = Math.max(0, Math.PI - phi);
+    const tau = clamp(Math.exp(-mu * theta), 0.55, 1);
+    drawDetails.push({ x: p1.x, y: p1.y, phi, theta, tau, index: i });
+  }
+
+  let tauTotal = 1;
+  for (const d of drawDetails) tauTotal *= d.tau;
+  tauTotal = clamp(tauTotal, 0.35, 1);
+
+  // propagate participation from climber side downward
+  const segmentWeights = new Array(segments.length).fill(1);
+  let running = 1;
+  for (let i = segments.length - 1; i >= 0; i--) {
+    segmentWeights[i] = running;
+    if (i > 0 && drawDetails[i - 1]) running *= drawDetails[i - 1].tau;
+  }
+
+  const totalPathLength = segments.reduce((s, seg) => s + seg.length, 0);
+  let effectiveRopeLength = 0;
+  for (let i = 0; i < segments.length; i++) effectiveRopeLength += segments[i].length * segmentWeights[i];
+  effectiveRopeLength = clamp(effectiveRopeLength, 0.5, totalPathLength);
+
+  return { path, segments, drawDetails, tauTotal, totalPathLength, effectiveRopeLength, segmentWeights };
+}
+
+export function ropeStiffness(params, effectiveLengthOverride) {
   const participation = Math.max(0.35, params.frictionParticipation);
-  const effectiveLength = Math.max(1, params.ropeOut * participation);
+  const effectiveLength = Math.max(1, effectiveLengthOverride ?? (params.ropeOut * participation));
   const dyn = params.ropeDynamicElongationPct / 100;
   const baseTensionAtDyn = params.ropeImpactForce * 1000 * 0.32;
   const kFromElong = baseTensionAtDyn / Math.max(0.2, effectiveLength * dyn);
@@ -28,7 +92,7 @@ export function deriveMetrics(params, sim) {
     ? 2 * params.climberAboveClip + params.slack
     : 2 * (params.lastClipHeight + params.climberAboveClip) + params.slack;
   const theoreticalFF = fallLength / Math.max(params.ropeOut, 0.1);
-  const actualFF = fallLength / Math.max(params.ropeOut * params.frictionParticipation, 0.1);
+  const actualFF = fallLength / Math.max(sim.effectiveRopeLength, 0.1);
   const softness = Math.max(0, Math.min(100,
     55 + (params.softCatchIntensity * 16) + (sim.maxBelayerY * 22) - (sim.maxClimberForce / 1000 * 7.5) - (sim.maxDecel * 5.5)
   ));
@@ -47,6 +111,11 @@ export function deriveMetrics(params, sim) {
     k: sim.k,
     maxDecel: sim.maxDecel,
     fallLength,
+    drawCount: sim.drawCount,
+    totalPathLength: sim.totalPathLength,
+    effectiveRopeLength: sim.effectiveRopeLength,
+    tauTotal: sim.tauTotal,
+    avgDrawTheta: sim.avgDrawTheta,
   };
 }
 
@@ -61,22 +130,16 @@ export function simulate(params, options = {}) {
   const floorY = 0;
 
   const climberStart = { x: Math.max(0.55, wallX + climberRadius), y: params.lastClipHeight + params.climberAboveClip };
-  const clip = { x: wallX, y: params.lastClipHeight };
   const belayerAnchor = { x: params.belayerStartX, y: floorY };
 
   let climber = { x: climberStart.x, y: climberStart.y, vx: 0, vy: 0 };
   let belayer = { x: params.belayerStartX, y: floorY + belayerRadius, vx: 0, vy: 0 };
 
-  const initialSeg1 = Math.hypot(climberStart.x - clip.x, climberStart.y - clip.y);
-  const initialSeg2 = Math.hypot(params.belayerStartX - clip.x, belayerRadius - clip.y);
-  const initialPathLength = initialSeg1 + initialSeg2;
-  // Important: the rope is already out at the start. Geometry sets the starting rope path,
-  // while ropeOut mainly influences effective stiffness / fall-factor severity. Slack adds extra travel
-  // before the rope becomes meaningfully loaded.
-  const restLength = Math.max(0.3, initialPathLength + params.slack);
-  const k = ropeStiffness(params);
-  const c = clamp(2 * params.damping * Math.sqrt(k * Math.max(1, params.climberMass)), 20, 300);
-  const tt = clamp(params.frictionTransmission, 0.35, 1);
+  const draws = generateDraws(params, wallX);
+  const initialRopeModel = computeRopeModel({ belayerPoint: belayer, climberPoint: climberStart, draws, params });
+  const restLength = Math.max(0.3, initialRopeModel.totalPathLength + params.slack);
+  const kBase = ropeStiffness(params, initialRopeModel.effectiveRopeLength);
+  const c = clamp(2 * params.damping * Math.sqrt(kBase * Math.max(1, params.climberMass)), 20, 300);
   const kt = tetherStiffness(params.anchorMode);
 
   let maxClimberForce = 0;
@@ -88,25 +151,30 @@ export function simulate(params, options = {}) {
   let softCatchTriggered = false;
   let ropeLoadedAt = null;
   let maxDecel = 0;
+  let lastRopeModel = initialRopeModel;
   const frames = [];
 
   for (let i = 0; i < steps; i++) {
     const t = i * dt;
-    const seg1 = Math.hypot(climber.x - clip.x, climber.y - clip.y);
-    const seg2 = Math.hypot(belayer.x - clip.x, belayer.y - clip.y);
-    const currentLen = seg1 + seg2;
-
-    const dir1 = seg1 > 1e-6 ? { x: (clip.x - climber.x) / seg1, y: (clip.y - climber.y) / seg1 } : { x: 0, y: -1 };
-    const dir2 = seg2 > 1e-6 ? { x: (clip.x - belayer.x) / seg2, y: (clip.y - belayer.y) / seg2 } : { x: -1, y: 0 };
+    const ropeModel = computeRopeModel({ belayerPoint: belayer, climberPoint: climber, draws, params });
+    lastRopeModel = ropeModel;
+    const currentLen = ropeModel.totalPathLength;
+    const segTop = ropeModel.segments[ropeModel.segments.length - 1];
+    const segBot = ropeModel.segments[0];
+    const dir1 = segTop.length > 1e-6 ? { x: (segTop.from.x - segTop.to.x) / segTop.length, y: (segTop.from.y - segTop.to.y) / segTop.length } : { x: 0, y: -1 };
+    const dir2 = segBot.length > 1e-6 ? { x: (segBot.to.x - segBot.from.x) / segBot.length, y: (segBot.to.y - segBot.from.y) / segBot.length } : { x: -1, y: 0 };
 
     const ext = Math.max(0, currentLen - restLength);
     const extRate = - (climber.vx * dir1.x + climber.vy * dir1.y) - (belayer.vx * dir2.x + belayer.vy * dir2.y);
+    const effectiveParticipatingLength = Math.max(
+      ropeModel.effectiveRopeLength,
+      params.ropeOut * clamp(0.55 + 0.45 * ropeModel.tauTotal, 0.45, 1)
+    );
+    const k = ropeStiffness(params, effectiveParticipatingLength);
     const T1 = ext > 0 ? clamp(k * ext + c * extRate, 0, 20000) : 0;
-    const T2 = T1 * tt;
+    const T2 = T1 * ropeModel.tauTotal;
     if (T1 > 50 && ropeLoadedAt === null) ropeLoadedAt = t;
 
-    // Soft catch approximation: a timed upward impulse on the belayer after rope loading.
-    // Not a detailed human biomechanics model.
     if (!softCatchTriggered && ropeLoadedAt !== null && t >= ropeLoadedAt + params.softCatchTiming * 0.2) {
       belayer.vy += 1.15 * params.softCatchIntensity;
       belayer.vx += 0.12 * params.softCatchIntensity;
@@ -132,9 +200,7 @@ export function simulate(params, options = {}) {
     const desiredGroundFx = T2 * dir2.x - belayer.vx * 25;
     const groundFx = clamp(desiredGroundFx, -footFriction, footFriction);
 
-    // If the first clip is in, low-height gym falls often limit belayer displacement more than
-    // the unclipped case. This is a crude proxy, not a full redirect / geometry model.
-    const firstClipLimiter = params.firstClipClipped ? clamp(1200 + 320 * params.lastClipHeight, 0, 5000) : 0;
+    const firstClipLimiter = params.firstClipClipped ? clamp(1200 + 320 * params.firstDrawHeight, 0, 5000) : 0;
     const firstClipFy = params.firstClipClipped && belayer.y > 0 ? -firstClipLimiter * belayer.y : 0;
 
     let belayerFx = T2 * dir2.x + tetherFx + groundFx;
@@ -152,36 +218,18 @@ export function simulate(params, options = {}) {
     const ayB = belayerFy / params.belayerMass;
     const axB = belayerFx / params.belayerMass;
 
-    climber.vx = clamp(climber.vx + axC * dt, -25, 25); climber.vy = clamp(climber.vy + ayC * dt, -35, 20);
-    belayer.vx = clamp(belayer.vx + axB * dt, -12, 12); belayer.vy = clamp(belayer.vy + ayB * dt, -20, 20);
+    climber.vx = clamp(climber.vx + axC * dt, -25, 25);
+    climber.vy = clamp(climber.vy + ayC * dt, -35, 20);
+    belayer.vx = clamp(belayer.vx + axB * dt, -12, 12);
+    belayer.vy = clamp(belayer.vy + ayB * dt, -20, 20);
     climber.x += climber.vx * dt; climber.y += climber.vy * dt;
     belayer.x += belayer.vx * dt; belayer.y += belayer.vy * dt;
 
-    let climberWallContact = false;
-    let climberGroundContact = false;
-    let belayerWallContact = false;
-    let belayerGroundContact = false;
-
-    if (climber.x < wallX + climberRadius) {
-      climber.x = wallX + climberRadius;
-      if (climber.vx < 0) climber.vx = 0;
-      climberWallContact = true;
-    }
-    if (climber.y < floorY + climberRadius) {
-      climber.y = floorY + climberRadius;
-      if (climber.vy < 0) climber.vy = 0;
-      climberGroundContact = true;
-    }
-    if (belayer.x < wallX + belayerRadius) {
-      belayer.x = wallX + belayerRadius;
-      if (belayer.vx < 0) belayer.vx = 0;
-      belayerWallContact = true;
-    }
-    if (belayer.y < floorY + belayerRadius) {
-      belayer.y = floorY + belayerRadius;
-      if (belayer.vy < 0) belayer.vy = 0;
-      belayerGroundContact = true;
-    }
+    let climberWallContact = false, climberGroundContact = false, belayerWallContact = false, belayerGroundContact = false;
+    if (climber.x < wallX + climberRadius) { climber.x = wallX + climberRadius; if (climber.vx < 0) climber.vx = 0; climberWallContact = true; }
+    if (climber.y < floorY + climberRadius) { climber.y = floorY + climberRadius; if (climber.vy < 0) climber.vy = 0; climberGroundContact = true; }
+    if (belayer.x < wallX + belayerRadius) { belayer.x = wallX + belayerRadius; if (belayer.vx < 0) belayer.vx = 0; belayerWallContact = true; }
+    if (belayer.y < floorY + belayerRadius) { belayer.y = floorY + belayerRadius; if (belayer.vy < 0) belayer.vy = 0; belayerGroundContact = true; }
 
     const minSpacing = climberRadius + belayerRadius;
     const dxCB = climber.x - belayer.x;
@@ -189,21 +237,10 @@ export function simulate(params, options = {}) {
     const distCB = Math.hypot(dxCB, dyCB);
     let bodyContact = false;
     if (distCB > 1e-6 && distCB < minSpacing) {
-      const nx = dxCB / distCB;
-      const ny = dyCB / distCB;
+      const nx = dxCB / distCB, ny = dyCB / distCB;
       const overlap = minSpacing - distCB;
-      climber.x += nx * overlap * 0.5;
-      climber.y += ny * overlap * 0.5;
-      belayer.x -= nx * overlap * 0.5;
-      belayer.y -= ny * overlap * 0.5;
-      const relNv = (climber.vx - belayer.vx) * nx + (climber.vy - belayer.vy) * ny;
-      if (relNv < 0) {
-        const impulse = -relNv * 0.35;
-        climber.vx += nx * impulse;
-        climber.vy += ny * impulse;
-        belayer.vx -= nx * impulse;
-        belayer.vy -= ny * impulse;
-      }
+      climber.x += nx * overlap * 0.5; climber.y += ny * overlap * 0.5;
+      belayer.x -= nx * overlap * 0.5; belayer.y -= ny * overlap * 0.5;
       bodyContact = true;
     }
 
@@ -226,11 +263,14 @@ export function simulate(params, options = {}) {
       t,
       climber: { ...climber },
       belayer: { ...belayer },
-      clip,
-      T1,
-      T2,
-      anchorLoad,
-      ext,
+      clip: draws[draws.length - 1] || { x: wallX, y: params.lastClipHeight },
+      draws,
+      drawDetails: ropeModel.drawDetails,
+      tauTotal: ropeModel.tauTotal,
+      totalPathLength: ropeModel.totalPathLength,
+      effectiveRopeLength: ropeModel.effectiveRopeLength,
+      effectiveParticipatingLength,
+      T1, T2, anchorLoad, ext,
       minClimberY,
       groundClearance: climberBottom - floorY,
       contacts: { climberWallContact, climberGroundContact, belayerWallContact, belayerGroundContact, bodyContact },
@@ -239,6 +279,29 @@ export function simulate(params, options = {}) {
     });
   }
 
-  const metrics = deriveMetrics(params, { maxClimberForce, maxBelayerLoad, maxAnchorLoad, minClimberY, minGroundClearance, maxBelayerY, ropeLoadedAt, k, maxDecel });
+  const avgDrawTheta = lastRopeModel.drawDetails.length
+    ? lastRopeModel.drawDetails.reduce((s, d) => s + d.theta, 0) / lastRopeModel.drawDetails.length
+    : 0;
+  const finalEffectiveParticipatingLength = Math.max(
+    lastRopeModel.effectiveRopeLength,
+    params.ropeOut * clamp(0.55 + 0.45 * lastRopeModel.tauTotal, 0.45, 1)
+  );
+  const metrics = deriveMetrics(params, {
+    maxClimberForce,
+    maxBelayerLoad,
+    maxAnchorLoad,
+    minClimberY,
+    minGroundClearance,
+    maxBelayerY,
+    ropeLoadedAt,
+    k: ropeStiffness(params, finalEffectiveParticipatingLength),
+    maxDecel,
+    drawCount: draws.length,
+    totalPathLength: lastRopeModel.totalPathLength,
+    effectiveRopeLength: lastRopeModel.effectiveRopeLength,
+    effectiveParticipatingLength: finalEffectiveParticipatingLength,
+    tauTotal: lastRopeModel.tauTotal,
+    avgDrawTheta,
+  });
   return { frames, metrics };
 }

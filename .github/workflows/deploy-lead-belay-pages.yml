@@ -4,6 +4,7 @@ on:
   push:
     branches: [main]
     paths:
+      - 'lead-belay-sim/**'
       - '.github/workflows/deploy-lead-belay-pages.yml'
   workflow_dispatch:
 
