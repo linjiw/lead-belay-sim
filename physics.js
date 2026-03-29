@@ -30,7 +30,7 @@ export function deriveMetrics(params, sim) {
   const theoreticalFF = fallLength / Math.max(params.ropeOut, 0.1);
   const actualFF = fallLength / Math.max(params.ropeOut * params.frictionParticipation, 0.1);
   const softness = Math.max(0, Math.min(100,
-    55 + (params.softCatchIntensity * 16) + (sim.maxBelayerY * 28) - (sim.maxClimberForce / 1000 * 6.5) - (sim.maxDecel * 4.5)
+    55 + (params.softCatchIntensity * 16) + (sim.maxBelayerY * 22) - (sim.maxClimberForce / 1000 * 7.5) - (sim.maxDecel * 5.5)
   ));
   return {
     theoreticalFF,
@@ -39,7 +39,8 @@ export function deriveMetrics(params, sim) {
     maxBelayerLoad: sim.maxBelayerLoad,
     maxAnchorLoad: sim.maxAnchorLoad,
     lowestPoint: sim.minClimberY,
-    groundFall: sim.minClimberY < 0,
+    minGroundClearance: sim.minGroundClearance,
+    groundFall: sim.minGroundClearance < 0.02,
     belayerLift: sim.maxBelayerY,
     catchSoftness: softness,
     ropeLoadedAt: sim.ropeLoadedAt,
@@ -54,15 +55,20 @@ export function simulate(params, options = {}) {
   const duration = options.duration ?? 4.8;
   const steps = Math.floor(duration / dt);
 
-  const climberStart = { x: 0.55, y: params.lastClipHeight + params.climberAboveClip };
-  const clip = { x: 0, y: params.lastClipHeight };
-  const belayerAnchor = { x: params.belayerStartX, y: 0 };
+  const climberRadius = options.climberRadius ?? 0.22;
+  const belayerRadius = options.belayerRadius ?? 0.24;
+  const wallX = 0;
+  const floorY = 0;
+
+  const climberStart = { x: Math.max(0.55, wallX + climberRadius), y: params.lastClipHeight + params.climberAboveClip };
+  const clip = { x: wallX, y: params.lastClipHeight };
+  const belayerAnchor = { x: params.belayerStartX, y: floorY };
 
   let climber = { x: climberStart.x, y: climberStart.y, vx: 0, vy: 0 };
-  let belayer = { x: params.belayerStartX, y: 0, vx: 0, vy: 0 };
+  let belayer = { x: params.belayerStartX, y: floorY + belayerRadius, vx: 0, vy: 0 };
 
   const initialSeg1 = Math.hypot(climberStart.x - clip.x, climberStart.y - clip.y);
-  const initialSeg2 = Math.hypot(params.belayerStartX - clip.x, 0 - clip.y);
+  const initialSeg2 = Math.hypot(params.belayerStartX - clip.x, belayerRadius - clip.y);
   const initialPathLength = initialSeg1 + initialSeg2;
   // Important: the rope is already out at the start. Geometry sets the starting rope path,
   // while ropeOut mainly influences effective stiffness / fall-factor severity. Slack adds extra travel
@@ -78,6 +84,7 @@ export function simulate(params, options = {}) {
   let maxAnchorLoad = 0;
   let minClimberY = Infinity;
   let maxBelayerY = 0;
+  let minGroundClearance = Infinity;
   let softCatchTriggered = false;
   let ropeLoadedAt = null;
   let maxDecel = 0;
@@ -133,10 +140,11 @@ export function simulate(params, options = {}) {
     let belayerFx = T2 * dir2.x + tetherFx + groundFx;
     let belayerFy = T2 * dir2.y - params.belayerMass * g + tetherFy + firstClipFy;
 
-    if (belayer.y <= 0 && belayerFy < 0) {
+    const belayerOnGround = belayer.y <= floorY + belayerRadius + 1e-6;
+    if (belayerOnGround && belayerFy < 0) {
       belayerFy = 0;
       if (belayer.vy < 0) belayer.vy = 0;
-      belayer.y = 0;
+      belayer.y = floorY + belayerRadius;
     }
 
     const ayC = climberFy / params.climberMass;
@@ -149,20 +157,88 @@ export function simulate(params, options = {}) {
     climber.x += climber.vx * dt; climber.y += climber.vy * dt;
     belayer.x += belayer.vx * dt; belayer.y += belayer.vy * dt;
 
-    if (climber.x < 0.2) { climber.x = 0.2; if (climber.vx < 0) climber.vx *= -0.18; }
-    if (belayer.x < 0.25) { belayer.x = 0.25; if (belayer.vx < 0) belayer.vx = 0; }
+    let climberWallContact = false;
+    let climberGroundContact = false;
+    let belayerWallContact = false;
+    let belayerGroundContact = false;
+
+    if (climber.x < wallX + climberRadius) {
+      climber.x = wallX + climberRadius;
+      if (climber.vx < 0) climber.vx = 0;
+      climberWallContact = true;
+    }
+    if (climber.y < floorY + climberRadius) {
+      climber.y = floorY + climberRadius;
+      if (climber.vy < 0) climber.vy = 0;
+      climberGroundContact = true;
+    }
+    if (belayer.x < wallX + belayerRadius) {
+      belayer.x = wallX + belayerRadius;
+      if (belayer.vx < 0) belayer.vx = 0;
+      belayerWallContact = true;
+    }
+    if (belayer.y < floorY + belayerRadius) {
+      belayer.y = floorY + belayerRadius;
+      if (belayer.vy < 0) belayer.vy = 0;
+      belayerGroundContact = true;
+    }
+
+    const minSpacing = climberRadius + belayerRadius;
+    const dxCB = climber.x - belayer.x;
+    const dyCB = climber.y - belayer.y;
+    const distCB = Math.hypot(dxCB, dyCB);
+    let bodyContact = false;
+    if (distCB > 1e-6 && distCB < minSpacing) {
+      const nx = dxCB / distCB;
+      const ny = dyCB / distCB;
+      const overlap = minSpacing - distCB;
+      climber.x += nx * overlap * 0.5;
+      climber.y += ny * overlap * 0.5;
+      belayer.x -= nx * overlap * 0.5;
+      belayer.y -= ny * overlap * 0.5;
+      const relNv = (climber.vx - belayer.vx) * nx + (climber.vy - belayer.vy) * ny;
+      if (relNv < 0) {
+        const impulse = -relNv * 0.35;
+        climber.vx += nx * impulse;
+        climber.vy += ny * impulse;
+        belayer.vx -= nx * impulse;
+        belayer.vy -= ny * impulse;
+      }
+      bodyContact = true;
+    }
+
+    climber.x = Math.max(climber.x, wallX + climberRadius);
+    climber.y = Math.max(climber.y, floorY + climberRadius);
+    belayer.x = Math.max(belayer.x, wallX + belayerRadius);
+    belayer.y = Math.max(belayer.y, floorY + belayerRadius);
 
     const anchorLoad = T1 + T2;
     maxClimberForce = Math.max(maxClimberForce, T1);
     maxBelayerLoad = Math.max(maxBelayerLoad, T2);
     maxAnchorLoad = Math.max(maxAnchorLoad, anchorLoad);
-    minClimberY = Math.min(minClimberY, climber.y);
-    maxBelayerY = Math.max(maxBelayerY, belayer.y);
+    const climberBottom = climber.y - climberRadius;
+    minClimberY = Math.min(minClimberY, climberBottom);
+    minGroundClearance = Math.min(minGroundClearance, climberBottom - floorY);
+    maxBelayerY = Math.max(maxBelayerY, belayer.y - belayerRadius);
     maxDecel = Math.max(maxDecel, Math.max(0, -ayC / g));
 
-    frames.push({ t, climber: { ...climber }, belayer: { ...belayer }, clip, T1, T2, anchorLoad, ext, minClimberY });
+    frames.push({
+      t,
+      climber: { ...climber },
+      belayer: { ...belayer },
+      clip,
+      T1,
+      T2,
+      anchorLoad,
+      ext,
+      minClimberY,
+      groundClearance: climberBottom - floorY,
+      contacts: { climberWallContact, climberGroundContact, belayerWallContact, belayerGroundContact, bodyContact },
+      radii: { climberRadius, belayerRadius },
+      ropeLoaded: T1 > 50,
+    });
   }
 
-  const metrics = deriveMetrics(params, { maxClimberForce, maxBelayerLoad, maxAnchorLoad, minClimberY, maxBelayerY, ropeLoadedAt, k, maxDecel });
+  const metrics = deriveMetrics(params, { maxClimberForce, maxBelayerLoad, maxAnchorLoad, minClimberY, minGroundClearance, maxBelayerY, ropeLoadedAt, k, maxDecel });
   return { frames, metrics };
 }

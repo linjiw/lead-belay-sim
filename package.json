@@ -3,6 +3,9 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "node test.js"
+    "test": "node test.js",
+    "test:trends": "node test-trends.js",
+    "test:constraints": "node test-constraints.js",
+    "test:output": "node test-output.js"
   }
 }

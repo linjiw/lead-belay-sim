@@ -126,7 +126,13 @@ function renderSummary(metrics) {
   els.states.innerHTML = states.map(s => `<div class="stateCard"><strong>${s.title}</strong><div>${s.text}</div></div>`).join('');
 }
 
-function drawPerson(pt, color, r) {
+function drawPerson(pt, color, r, highlight = false) {
+  if (highlight) {
+    ctx.fillStyle = 'rgba(255,123,123,0.16)';
+    ctx.beginPath();
+    ctx.arc(pt.x, pt.y, r * 1.15, 0, Math.PI * 2);
+    ctx.fill();
+  }
   ctx.fillStyle = color;
   ctx.beginPath();
   ctx.arc(pt.x, pt.y - r * 1.6, r * 0.6, 0, Math.PI * 2);
@@ -158,6 +164,8 @@ function draw(frame) {
   const clip = toCanvas(frame.clip);
   const climber = toCanvas(frame.climber);
   const belayer = toCanvas(frame.belayer);
+  const climberR = frame.radii ? frame.radii.climberRadius * scaleY : 12;
+  const belayerR = frame.radii ? frame.radii.belayerRadius * scaleY : 12;
 
   ctx.strokeStyle = '#d4e2ff';
   ctx.lineWidth = 6;
@@ -191,15 +199,87 @@ function draw(frame) {
   ctx.fillStyle = 'rgba(255,123,123,0.14)';
   ctx.fillRect(0, groundY - 36, width, 36);
 
-  drawPerson(belayer, '#7ee081', 12);
-  drawPerson(climber, '#ffcf66', 12);
+  if (frame.contacts?.climberWallContact || frame.contacts?.climberGroundContact) {
+    ctx.strokeStyle = 'rgba(255,123,123,0.5)';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(climber.x, climber.y, climberR, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+  if (frame.contacts?.belayerWallContact || frame.contacts?.belayerGroundContact) {
+    ctx.strokeStyle = 'rgba(255,123,123,0.5)';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(belayer.x, belayer.y, belayerR, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+
+  drawPerson(belayer, '#7ee081', Math.max(10, belayerR * 0.7), frame.contacts?.belayerWallContact || frame.contacts?.belayerGroundContact || frame.contacts?.bodyContact);
+  drawPerson(climber, '#ffcf66', Math.max(10, climberR * 0.7), frame.contacts?.climberWallContact || frame.contacts?.climberGroundContact || frame.contacts?.bodyContact);
 
   ctx.fillStyle = '#ecf2ff';
   ctx.font = '14px sans-serif';
-  ctx.fillText(`tension climber: ${(frame.T1 / 1000).toFixed(2)} kN`, width - 220, 30);
-  ctx.fillText(`anchor load: ${(frame.anchorLoad / 1000).toFixed(2)} kN`, width - 220, 50);
-  ctx.fillText(`extension: ${frame.ext.toFixed(2)} m`, width - 220, 70);
+  ctx.fillText(`tension climber: ${(frame.T1 / 1000).toFixed(2)} kN`, width - 250, 30);
+  ctx.fillText(`anchor load: ${(frame.anchorLoad / 1000).toFixed(2)} kN`, width - 250, 50);
+  ctx.fillText(`extension: ${frame.ext.toFixed(2)} m`, width - 250, 70);
+  ctx.fillText(`contacts: ${[
+    frame.contacts?.climberWallContact ? 'C-wall' : null,
+    frame.contacts?.climberGroundContact ? 'C-ground' : null,
+    frame.contacts?.belayerWallContact ? 'B-wall' : null,
+    frame.contacts?.belayerGroundContact ? 'B-ground' : null,
+    frame.contacts?.bodyContact ? 'body' : null,
+  ].filter(Boolean).join(', ') || 'none'}` , width - 250, 90);
+  ctx.fillText(`rope loaded: ${frame.ropeLoaded ? 'yes' : 'no'}`, width - 250, 110);
+  ctx.fillText(`clearance: ${frame.groundClearance.toFixed(2)} m`, width - 250, 130);
   ctx.fillText('ground', 12, groundY - 10);
+}
+
+function drawSeries(canvasCtx, canvas, frames, selector, color, currentIndex, opts = {}) {
+  const { width, height } = canvas;
+  canvasCtx.clearRect(0, 0, width, height);
+  canvasCtx.fillStyle = '#0d1529';
+  canvasCtx.fillRect(0, 0, width, height);
+  const values = frames.map(selector);
+  const minVal = opts.min ?? Math.min(...values);
+  const maxVal = opts.max ?? Math.max(...values);
+  const lo = Number.isFinite(minVal) ? minVal : 0;
+  const hi = Number.isFinite(maxVal) && maxVal > lo ? maxVal : lo + 1;
+  const pad = 24;
+  canvasCtx.strokeStyle = 'rgba(255,255,255,0.12)';
+  canvasCtx.lineWidth = 1;
+  canvasCtx.beginPath();
+  canvasCtx.moveTo(pad, height - pad);
+  canvasCtx.lineTo(width - pad, height - pad);
+  canvasCtx.moveTo(pad, pad);
+  canvasCtx.lineTo(pad, height - pad);
+  canvasCtx.stroke();
+  canvasCtx.strokeStyle = color;
+  canvasCtx.lineWidth = 2;
+  canvasCtx.beginPath();
+  values.forEach((v, i) => {
+    const x = pad + (i / Math.max(1, values.length - 1)) * (width - pad * 2);
+    const y = height - pad - ((v - lo) / (hi - lo)) * (height - pad * 2);
+    if (i === 0) canvasCtx.moveTo(x, y); else canvasCtx.lineTo(x, y);
+  });
+  canvasCtx.stroke();
+  const idx = Math.min(currentIndex, values.length - 1);
+  const cx = pad + (idx / Math.max(1, values.length - 1)) * (width - pad * 2);
+  const cy = height - pad - ((values[idx] - lo) / (hi - lo)) * (height - pad * 2);
+  canvasCtx.fillStyle = color;
+  canvasCtx.beginPath();
+  canvasCtx.arc(cx, cy, 4, 0, Math.PI * 2);
+  canvasCtx.fill();
+  canvasCtx.fillStyle = '#dfe8ff';
+  canvasCtx.font = '12px sans-serif';
+  canvasCtx.fillText(`min ${lo.toFixed(2)}`, 8, height - 8);
+  canvasCtx.fillText(`max ${hi.toFixed(2)}`, 8, 16);
+}
+
+function drawCharts(currentIndex = 0) {
+  if (!state.frames.length) return;
+  drawSeries(forceCtx, els.forceChart, state.frames, f => f.T1 / 1000, '#6ee7ff', currentIndex, { min: 0 });
+  drawSeries(clearanceCtx, els.clearanceChart, state.frames, f => f.groundClearance, '#ffcf66', currentIndex);
+  drawSeries(belayerCtx, els.belayerChart, state.frames, f => f.belayer.y - f.radii.belayerRadius, '#7ee081', currentIndex, { min: 0 });
 }
 
 function updateTimeline() {
