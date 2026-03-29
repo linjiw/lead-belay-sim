@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>Lead Belay Fall Simulator</title>
+  <meta name="description" content="Research/teaching-oriented lead climbing fall simulator for exploring fall factor, soft catch, rope drag, belayer mass, and ground-fall risk." />
+  <meta name="robots" content="index,follow" />
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <div class="app">
+    <header class="topbar">
+      <div>
+        <h1>先锋保护冲坠模拟器</h1>
+        <p class="subtitle">研究/教学用途的物理近似模型，不可替代真实培训或安全决策。</p>
+      </div>
+      <div class="actions">
+        <button id="runBtn">运行模拟</button>
+        <button id="resetBtn" class="secondary">重置</button>
+      </div>
+    </header>
+
+    <main class="layout">
+      <section class="panel controls">
+        <h2>参数</h2>
+        <div class="presetRow">
+          <label>预设场景</label>
+          <select id="preset"></select>
+        </div>
+        <div id="controlsGrid" class="controlsGrid"></div>
+      </section>
+
+      <section class="panel viz">
+        <div class="vizHeader">
+          <h2>动画 / 轨迹</h2>
+          <div class="pill" id="statusPill">待运行</div>
+        </div>
+        <canvas id="scene" width="900" height="620"></canvas>
+        <div class="timelineWrap">
+          <input id="timeline" type="range" min="0" max="0" value="0" step="1" />
+          <div class="timelineMeta"><span id="timeLabel">t = 0.00 s</span><span id="frameLabel">0 / 0</span></div>
+        </div>
+      </section>
+
+      <section class="panel summary">
+        <h2>结果</h2>
+        <div id="summaryGrid" class="summaryGrid"></div>
+        <h3>状态解释</h3>
+        <div id="states" class="states"></div>
+      </section>
+
+      <section class="panel notes">
+        <h2>模型说明</h2>
+        <ul>
+          <li>采用 <strong>2 质点 + 等效绳弹簧/阻尼 + 快挂摩擦折减有效绳长 + 保护员可位移/可系挂</strong> 的近似模型。</li>
+          <li>同时输出 <strong>理论 fall factor</strong> 与 <strong>实际 fall factor</strong>。后者用有效绳长估计，反映快挂转折、rope drag、器械阻力等让部分绳段不完全参与伸长。</li>
+          <li><strong>soft catch</strong> 被建模为：保护员在设定时机主动上跳/减阻，增加系统位移并降低峰值力。</li>
+          <li><strong>ground fall</strong> 依据 climber 最低点是否低于地面判定；首挂未挂、低挂片、轻保护员、低摩擦、长余绳都会增加风险。</li>
+          <li>锚点力用近似值：<strong>climber 侧绳张力 + belayer 侧绳张力</strong>。转向点和摩擦会使两侧不完全相等。</li>
+          <li>这不是认证计算器。真实结果还受 belay device 滑绳、脚下摩擦、人体姿态、撞墙、反应延迟、实际绳型和磨损影响。</li>
+        </ul>
+      </section>
+    </main>
+  </div>
+
+  <script type="module" src="./app.js"></script>
+</body>
+</html>
