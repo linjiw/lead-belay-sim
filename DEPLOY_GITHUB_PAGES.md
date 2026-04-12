@@ -52,11 +52,10 @@ Then in GitHub:
 4. The included workflow should deploy automatically
 
 ## If using this existing repo
-Push this workspace repo to GitHub, then enable Pages using GitHub Actions. The workflow file is already added:
+Push this repo to GitHub, then enable Pages using GitHub Actions. The workflow file is already added:
 - `.github/workflows/deploy-lead-belay-pages.yml`
 
-It publishes only:
-- `lead-belay-sim/`
+It publishes the current repo root after running `npm test`.
 
 ## Result URL
 Usually:

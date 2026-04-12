@@ -12,15 +12,24 @@ export function generateDraws(params, wallX = 0) {
   const draws = [];
   const count = Math.max(1, Math.round(params.drawCount || 1));
   const baseX = wallX + 0.02;
-  const maxHeight = params.lastClipHeight + Math.max(0.05, params.climberAboveClip * 0.8);
+  const topY = Math.max(0.35, params.lastClipHeight);
+  let bottomY = Math.min(params.firstDrawHeight, topY);
+
+  // When the user enters an inconsistent first-draw/last-clip pair,
+  // back-fill from the top clip so the route geometry stays usable.
+  if (count > 1 && (topY - bottomY) < 0.12 * (count - 1)) {
+    bottomY = Math.max(0.35, topY - Math.max(0.3, params.drawSpacing) * (count - 1));
+  }
+
   for (let i = 0; i < count; i++) {
-    const y = params.firstDrawHeight + i * params.drawSpacing;
+    const y = count === 1
+      ? topY
+      : bottomY + ((topY - bottomY) * i) / (count - 1);
     const offsetSign = i % 2 === 0 ? 1 : -1;
     const x = baseX + offsetSign * params.routeWander * Math.min(1, 0.45 + i * 0.12);
     draws.push({ x, y, clipped: true, index: i + 1 });
   }
-  const clipped = draws.filter(d => d.y <= maxHeight);
-  return clipped.length ? clipped : [{ x: baseX, y: Math.min(params.firstDrawHeight, maxHeight), clipped: true, index: 1 }];
+  return draws;
 }
 
 export function angleBetween(v1, v2) {
@@ -72,8 +81,7 @@ export function computeRopeModel({ belayerPoint, climberPoint, draws, params }) 
 }
 
 export function ropeStiffness(params, effectiveLengthOverride) {
-  const participation = Math.max(0.35, params.frictionParticipation);
-  const effectiveLength = Math.max(1, effectiveLengthOverride ?? (params.ropeOut * participation));
+  const effectiveLength = Math.max(1, effectiveLengthOverride ?? params.ropeOut);
   const dyn = params.ropeDynamicElongationPct / 100;
   const baseTensionAtDyn = params.ropeImpactForce * 1000 * 0.32;
   const kFromElong = baseTensionAtDyn / Math.max(0.2, effectiveLength * dyn);
@@ -114,8 +122,10 @@ export function deriveMetrics(params, sim) {
     drawCount: sim.drawCount,
     totalPathLength: sim.totalPathLength,
     effectiveRopeLength: sim.effectiveRopeLength,
+    ropeParticipation: sim.totalPathLength > 0 ? sim.effectiveRopeLength / sim.totalPathLength : 1,
     tauTotal: sim.tauTotal,
     avgDrawTheta: sim.avgDrawTheta,
+    softCatchTriggeredAt: sim.softCatchTriggeredAt,
   };
 }
 
@@ -149,6 +159,7 @@ export function simulate(params, options = {}) {
   let maxBelayerY = 0;
   let minGroundClearance = Infinity;
   let softCatchTriggered = false;
+  let softCatchTriggeredAt = null;
   let ropeLoadedAt = null;
   let maxDecel = 0;
   let lastRopeModel = initialRopeModel;
@@ -175,10 +186,11 @@ export function simulate(params, options = {}) {
     const T2 = T1 * ropeModel.tauTotal;
     if (T1 > 50 && ropeLoadedAt === null) ropeLoadedAt = t;
 
-    if (!softCatchTriggered && ropeLoadedAt !== null && t >= ropeLoadedAt + params.softCatchTiming * 0.2) {
+    if (!softCatchTriggered && params.softCatchIntensity > 0 && ropeLoadedAt !== null && t >= ropeLoadedAt + Math.max(0, params.softCatchTiming)) {
       belayer.vy += 1.15 * params.softCatchIntensity;
-      belayer.vx += 0.12 * params.softCatchIntensity;
+      belayer.vx -= 0.12 * params.softCatchIntensity;
       softCatchTriggered = true;
+      softCatchTriggeredAt = t;
     }
 
     const climberFx = T1 * dir1.x;
@@ -217,6 +229,10 @@ export function simulate(params, options = {}) {
     const axC = climberFx / params.climberMass;
     const ayB = belayerFy / params.belayerMass;
     const axB = belayerFx / params.belayerMass;
+    const climberSpeed = Math.hypot(climber.vx, climber.vy);
+    const decelAlongVelocity = climberSpeed > 1e-6
+      ? Math.max(0, -((axC * climber.vx) + (ayC * climber.vy)) / climberSpeed / g)
+      : 0;
 
     climber.vx = clamp(climber.vx + axC * dt, -25, 25);
     climber.vy = clamp(climber.vy + ayC * dt, -35, 20);
@@ -257,7 +273,7 @@ export function simulate(params, options = {}) {
     minClimberY = Math.min(minClimberY, climberBottom);
     minGroundClearance = Math.min(minGroundClearance, climberBottom - floorY);
     maxBelayerY = Math.max(maxBelayerY, belayer.y - belayerRadius);
-    maxDecel = Math.max(maxDecel, Math.max(0, -ayC / g));
+    maxDecel = Math.max(maxDecel, decelAlongVelocity);
 
     frames.push({
       t,
@@ -302,6 +318,7 @@ export function simulate(params, options = {}) {
     effectiveParticipatingLength: finalEffectiveParticipatingLength,
     tauTotal: lastRopeModel.tauTotal,
     avgDrawTheta,
+    softCatchTriggeredAt,
   });
   return { frames, metrics };
 }

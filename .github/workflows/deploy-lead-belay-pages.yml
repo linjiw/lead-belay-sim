@@ -3,9 +3,6 @@ name: Deploy Lead Belay Simulator to GitHub Pages
 on:
   push:
     branches: [main]
-    paths:
-      - 'lead-belay-sim/**'
-      - '.github/workflows/deploy-lead-belay-pages.yml'
   workflow_dispatch:
 
 permissions:
@@ -23,6 +20,14 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Run sanity tests
+        run: npm test
 
       - name: Setup Pages
         uses: actions/configure-pages@v5

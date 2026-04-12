@@ -1,13 +1,13 @@
 # Lead Belay Fall Simulator
 
-一个面向研究/教学的先锋保护冲坠网页模拟器。它尝试把真正关键的关系做成可调、可见、可测试：
+一个面向研究 / 教学的先锋保护冲坠网页模拟器，用来观察这些关系在同一套近似模型里的联动：
 
 - theoretical fall factor vs actual fall factor
-- rope effective length / rope drag / quickdraw friction
-- belayer mass、约束方式、位移与 soft catch / hard catch 的关系
-- low clip、first clip、ground fall 风险
+- rope path / quickdraw friction / effective rope length
+- belayer 体重、约束方式、位移与 soft catch / hard catch
+- 低挂片、首挂、离地余量与 ground-fall 风险
 
-**真实汇报：** 这仍然是一个 **教育用途的近似模型**，不是认证工具，也不能替代真人培训、器械说明书或实际保护判断。
+**安全边界：** 这是教育用途的近似模型，不是认证计算器，也不能替代真实培训、器械说明书或现场保护判断。
 
 ## 运行
 
@@ -16,163 +16,101 @@
 
 ### 本地静态服务
 ```bash
-cd lead-belay-sim
 python3 -m http.server 8080
 ```
 
-### 跑自动 sanity tests
+### 自动 sanity tests
 ```bash
-cd lead-belay-sim
 npm test
-# 或 node test.js
+npm run test:trends
+npm run test:constraints
+npm run test:output
+npm run test:multidraw
 ```
 
-## V2 结构
-- `index.html` — 页面骨架
-- `styles.css` — 响应式 UI
-- `app.js` — 交互和可视化
-- `physics.js` — 物理内核
-- `presets.js` — 字段定义与预设场景
-- `test.js` — 自动趋势/常识校验
+## 文件结构
+
+- `index.html`：页面骨架
+- `styles.css`：响应式 UI
+- `app.js`：控件、动画、结果卡片、时间曲线
+- `physics.js`：核心近似物理模型
+- `presets.js`：字段定义与预设场景
+- `test*.js`：Node 侧 sanity / trend / output tests
+- `tests.md`：手工验证清单
 
 ## 模型概述
 
-### 1) 基本对象
-模型采用 **2D 双质点**：
+### 1. 基本对象
+模型使用 2D 双质点：
+
 - climber
 - belayer
 
-二者通过经过最后挂片/redirect 的 **等效动态绳** 相连。
+两者通过经过所有已挂快挂的等效动态绳相连。
 
-### 2) 绳模型
-绳索张力用简化的弹簧-阻尼器近似：
-- `T_climber = k_eff * extension + c_eff * extensionRate`
-- 只有当绳路长度超过 `restLength` 后才开始受力
+### 2. 绳模型
+绳张力用简化弹簧-阻尼器近似：
 
-其中：
-- `k_eff` 随有效绳长变化，体现 **绳越长，系统越软**
-- `ropeDynamicElongationPct` 与 `ropeImpactForce` 用来做启发式刚度校准
-- 这不是 UIAA 标准推导，也不是厂商实验复现，而是为了让数量级和趋势更合理
+- `T = k_eff * extension + c_eff * extensionRate`
+- 只有当当前绳路长度超过 `restLength` 才开始受力
 
-### 3) actual fall factor
-理论 fall factor：
-- `fallLength / ropeOut`
+`k_eff` 会随有效参与伸长的绳长变化而变化，所以同一段 fall length 在“更多绳参与伸长”时会更软。
 
-实际 fall factor：
-- `fallLength / effectiveRopeLength`
+### 3. 实际 fall factor
 
-其中：
-- `effectiveRopeLength = ropeOut * frictionParticipation`
-- `frictionParticipation < 1` 时表示快挂转折、rope drag、器械阻力等让一部分绳段不能充分参与伸长
+- theoretical FF: `fallLength / ropeOut`
+- actual FF: `fallLength / effectiveRopeLength`
 
-### 4) 两侧张力不对称
-真实系统里，redirect / quickdraw 摩擦会使 climber 侧和 belayer 侧张力不同。
-这里用：
-- `T_belayer ≈ T_climber * frictionTransmission`
+这里的 `effectiveRopeLength` 不再是单个固定系数，而是对 belayer -> draws -> climber 各段绳长按传递损失加权后的结果。快挂越多、转折越大、摩擦越高，真正参与伸长的绳段通常越少。
 
-这比逐挂点 capstan 方程粗糙，但更轻量，也更适合交互调参。
+### 4. 多快挂路径
+当前实现会把最高已挂快挂固定在 `lastClipHeight`，再在 `firstDrawHeight` 与 `lastClipHeight` 之间分布其余已挂点。这样路径几何和“当前最高已挂高度”保持一致，不会再出现最高挂点与参数不匹配的情况。
 
-### 5) belayer 模型
-belayer 不是固定点，而是一个可运动质量块，受：
+### 5. Belayer / soft catch
+belayer 不是固定点，而是可运动质量块，受：
+
 - 自身体重
-- 与地面的简化摩擦/支撑
+- 地面简化摩擦
 - tether 模式（free / soft / hard）
 - soft catch 时机与强度
-影响。
 
-### 6) 几何与碰撞约束
-V2.1 增加了基础几何约束：
-- climber / belayer 具有有限半径，不再被视为无尺寸点
-- 地面与墙面做位置投影和法向速度修正
-- climber 与 belayer 之间增加最小间距约束，减少相互穿模
+`softCatchTiming` 现在按“绳开始加载后的秒数”解释；触发时会给 belayer 一个向上、向墙 / 向锚点方向的小速度脉冲。
 
-这些约束会显著减少“穿进墙里/掉进地下”的视觉 bug，但它们依然是游戏式约束，不是高保真人体接触求解。
+### 6. 输出
+页面会显示：
 
-当前地面接触采用“惩罚力 + 位置投影”的混合做法：
-- 接近/轻微穿透地面时，用向上的弹簧-阻尼反力提前托住
-- 真穿透时，再投影回边界并清掉法向向下速度
-
-这样比纯粹的硬截断更平滑，但仍然不是严格连续碰撞检测。
-
-### 7) soft catch 近似
-soft catch 在实现上被近似为：
-- 绳开始加载后，保护员在设定时机获得一个向上/向内的小速度脉冲
-
-它不是人体动作仿真，只是为了表达：
-- 更主动、更及时的动态保护 → 系统位移增大 → 峰值力通常降低
-
-### 8) 输出指标
-- theoretical fall factor
-- actual fall factor
-- climber 峰值绳力
-- belayer 峰值受力
-- anchor 近似峰值载荷
-- lowest climber point
-- minimum ground clearance
-- ground fall yes/no
+- 理论 / 实际 fall factor
+- climber / belayer / anchor 近似峰值载荷
+- 最低点与最小离地余量
+- ground-fall 判定
 - belayer lift
-- catch softness（综合启发式评分）
+- 三张时间曲线：climber rope force、ground clearance、belayer lift
 
-## 已做的测试
-`test.js` 里目前做的是 **sanity / trend tests**，不是实验室验证：
+## 已做的 sanity checks
 
-1. 更长 rope out → 峰值力下降
-2. 更大 friction / 更少有效绳长 → actual FF 升高、peak force 升高
-3. 更轻/更自由的 belayer → 被带起更多
-4. 更硬/更重/更受限的 belayer → anchor load 更高
-5. first clip off → 低点更低，ground-fall 风险更高
+当前自动测试主要检查趋势与约束，不是实验室级校准：
 
-## 还没做到的
-以下内容目前**没有被真实建模**，所以我不会假装它已经准确：
+1. 更长有效绳长通常降低峰值力
+2. 更高摩擦 / 更多折返会降低传递并缩短有效绳长
+3. 更轻或更自由的 belayer 更容易被带起
+4. 更硬或更受限的 belayer 会提高 anchor load
+5. 墙面 / 地面 / 人体半径约束不会被穿透
+6. 输出 time series 与关键指标字段保持完整
 
-- 逐个 quickdraw 的角度与 capstan friction
-- 具体 belay device 的滑绳曲线
-- rope hysteresis / 非线性粘弹性 / 热耗散
-- 人体姿态、撞墙、脚蹬墙、旋转、抓绳误差
-- 绳路在不同挂点的几何变化
+## 没有真实建模的部分
 
-## 参考与校验思路
-这个项目借鉴的是真实文献/公开技术文章里的关系，而不是硬抄某一个公式：
-- fall factor 是严重度核心指标之一
-- 实际受力会被 rope drag、belayer displacement、belay device 行为显著改变
-- 真实人的 field falls 往往比 UIAA 刚性金属块测试“柔和”
+以下内容目前仍然是明显简化的：
 
-所以它更像：
-- **用于理解关系的交互式模型**
+- 真实 belay device 滑绳曲线
+- 分段绳的非线性粘弹性 / hysteresis / 热耗散
+- 人体姿态、脚蹬墙、旋转、抓绳误差
+- 高保真的碰撞 / 接触求解
+- 与真实文章或厂家测试的定量对标
+
+所以更准确的定位是：
+
+- 用于理解关系和比较趋势的交互式模型
+
 而不是：
-- **拿去决定该不该这样保护** 的工具
 
-## 手机端
-V2 保持静态网页结构，布局为响应式：
-- 小屏单列
-- 画布自适应
-- 滑杆和结果卡片可触控查看
-
-## 下一步建议
-如果继续做 V3，我建议按这个顺序：
-1. 多挂点分段绳模型
-2. 更明确的 belayer device / slip 模型
-3. 结果曲线图（力-时间、位移-时间）
-4. 预设对标真实文章场景并输出差异说明
-��某一个公式：
-- fall factor 是严重度核心指标之一
-- 实际受力会被 rope drag、belayer displacement、belay device 行为显著改变
-- 真实人的 field falls 往往比 UIAA 刚性金属块测试“柔和”
-
-所以它更像：
-- **用于理解关系的交互式模型**
-而不是：
-- **拿去决定该不该这样保护** 的工具
-
-## 手机端
-V2 保持静态网页结构，布局为响应式：
-- 小屏单列
-- 画布自适应
-- 滑杆和结果卡片可触控查看
-
-## 下一步建议
-如果继续做 V3，我建议按这个顺序：
-1. 多挂点分段绳模型
-2. 更明确的 belayer device / slip 模型
-3. 结果曲线图（力-时间、位移-时间）
-4. 预设对标真实文章场景并输出差异说明
+- 用来决定现实中该不该这样保护的安全工具

@@ -7,6 +7,7 @@ const state = {
   result: null,
   playing: false,
   playIndex: 0,
+  animationFrameId: null,
 };
 
 const els = {
@@ -21,8 +22,14 @@ const els = {
   frameLabel: document.getElementById('frameLabel'),
   statusPill: document.getElementById('statusPill'),
   canvas: document.getElementById('scene'),
+  forceChart: document.getElementById('forceChart'),
+  clearanceChart: document.getElementById('clearanceChart'),
+  belayerChart: document.getElementById('belayerChart'),
 };
 const ctx = els.canvas.getContext('2d');
+const forceCtx = els.forceChart.getContext('2d');
+const clearanceCtx = els.clearanceChart.getContext('2d');
+const belayerCtx = els.belayerChart.getContext('2d');
 
 function setupPresetSelect() {
   Object.entries(presets).forEach(([key, preset]) => {
@@ -86,11 +93,13 @@ function buildControls() {
 
 function applyPreset(key) {
   state.params = { ...defaultParams(), ...presets[key].values };
+  els.preset.value = key;
   buildControls();
   run();
 }
 
 function renderSummary(metrics) {
+  const ropeParticipationPct = metrics.ropeParticipation * 100;
   const items = [
     ['理论 Fall Factor', metrics.theoreticalFF.toFixed(2)],
     ['实际 Fall Factor', metrics.actualFF.toFixed(2)],
@@ -106,6 +115,7 @@ function renderSummary(metrics) {
     ['draw 数量', `${metrics.drawCount}`],
     ['总绳路长度', `${metrics.totalPathLength.toFixed(2)} m`],
     ['有效绳长', `${metrics.effectiveRopeLength.toFixed(2)} m`],
+    ['参与绳比例', `${ropeParticipationPct.toFixed(0)} %`],
     ['总 transmission', `${metrics.tauTotal.toFixed(2)}`],
     ['rope loaded at', metrics.ropeLoadedAt != null ? `${metrics.ropeLoadedAt.toFixed(2)} s` : 'n/a'],
   ];
@@ -122,7 +132,9 @@ function renderSummary(metrics) {
     },
     {
       title: '绳线 / 快挂摩擦',
-      text: state.params.frictionParticipation < 0.75 ? '当前设置让较少绳段参与伸长，等效系统更硬。' : '当前绳线较直、有效绳长较大，更容易出现位移大但力较缓的 catch。'
+      text: metrics.ropeParticipation < 0.78 || metrics.tauTotal < 0.72
+        ? '当前绳线折返和摩擦较明显，真正参与伸长的绳段偏少，系统会更硬。'
+        : '当前绳线较直、传递损失较低，更容易出现位移更大但峰值力更缓的 catch。'
     },
     {
       title: '安全提醒',
@@ -300,19 +312,38 @@ function updateTimeline() {
   const frame = state.frames[i] || state.frames[0];
   if (!frame) return;
   draw(frame);
+  drawCharts(i);
   els.timeLabel.textContent = `t = ${frame.t.toFixed(2)} s`;
   els.frameLabel.textContent = `${i + 1} / ${state.frames.length}`;
 }
 
+function cancelAnimation() {
+  if (state.animationFrameId !== null) {
+    cancelAnimationFrame(state.animationFrameId);
+    state.animationFrameId = null;
+  }
+}
+
 function animate() {
-  if (!state.playing) return;
+  if (!state.playing || !state.frames.length) {
+    state.animationFrameId = null;
+    return;
+  }
   state.playIndex = (state.playIndex + 1) % state.frames.length;
   els.timeline.value = state.playIndex;
   updateTimeline();
-  requestAnimationFrame(animate);
+  state.animationFrameId = requestAnimationFrame(animate);
+}
+
+function startAnimation() {
+  cancelAnimation();
+  if (!state.frames.length) return;
+  state.playing = true;
+  state.animationFrameId = requestAnimationFrame(animate);
 }
 
 function run() {
+  cancelAnimation();
   const { frames, metrics } = simulate(state.params);
   state.frames = frames;
   state.result = metrics;
@@ -321,15 +352,18 @@ function run() {
   renderSummary(metrics);
   updateTimeline();
   state.playIndex = 0;
-  state.playing = true;
   els.statusPill.textContent = metrics.groundFall ? '发生 ground-fall' : '模拟完成';
   els.statusPill.style.color = metrics.groundFall ? '#ffb1b1' : '#b6ffcb';
-  animate();
+  startAnimation();
 }
 
 els.runBtn.addEventListener('click', run);
 els.resetBtn.addEventListener('click', () => applyPreset('gymLowClipRisk'));
-els.timeline.addEventListener('input', () => { state.playing = false; updateTimeline(); });
+els.timeline.addEventListener('input', () => {
+  state.playing = false;
+  cancelAnimation();
+  updateTimeline();
+});
 
 setupPresetSelect();
 els.preset.value = 'gymLowClipRisk';
